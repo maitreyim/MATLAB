@@ -1,0 +1,218 @@
+function [X] = impliedVolatility_BAW(isCall, marketPrice, S, X, r, b, T)
+%--------------------------------------------------------------------------
+% Approximates implied volatility for a given option price by inverting 
+% Barone-Adesi and Whaley (1987) formula
+% -> See "Determining the implied volatility [...]", Kutner (1998)
+% 
+% isCall        = Call = 1, Put = 0
+% marketPrice   = Market price of american option
+% S             = Price of underlying asset (S=F option on future)
+% X             = Strike Price of Option
+% r             = Risk free interest rate
+% b             = Cost-of-carry rate (b=0 for option on future)
+% T             = Time to Maturity
+%--------------------------------------------------------------------------
+
+% Estimation of sigma also requires the estimation of S*
+% 1) Condition for cirtical commodity price:
+%    f(S*,sigma^2) = c(S*,T) + EEP - (S*-X) = 0
+% 2) Option market price must equal model price
+%    g(S*,sigma^2) = c(S,T) + A2*(S/S*)^q2 - w = 0
+%
+%       EEP : Early Exercise Premium
+%       w   : Call Option Premium
+%       EEP = Early Exercise Premium
+%
+% => Find solution with Generalized Newton Method to solve multiple
+% nonlinear equations simutaneously:
+%  - Start with initial values S*(0) and sigma(0) and
+%    iteratively find the solution:
+%    | S*(i+1)      | = | S*(i)      | - J_inv * | g(S*(i),sigma^2(i)) |
+%    | sigma^2(i+1) |   | sigma^2(i) |           | f(S*(i),sigma^2(i)) |
+
+% start timer
+%tic;
+
+    try 
+
+        if (isCall)
+            % Set initial starting values
+            S_Star_0 = S*1.2;
+            %sigma_0 = 0.1;
+
+            S_Star = S_Star_0;
+
+            % Makes implementation a lot slower, but seems to produce values
+            % for all kinds of options, even deep-in-the-money
+            Black_Vol = blkimpv(S, X, r, T, marketPrice, [], [], true);
+
+            Sigma = Black_Vol;
+            SigmaSqr = Sigma^2;
+
+
+            tolerance_f = 1;
+            tolerance_g = 1;
+            iterationCount = 0;
+
+            while (tolerance_f > 0.00001 && tolerance_g > 0.001 && iterationCount < 1000)
+
+
+                M = (2*r)/(Sigma^2);
+                N = (2*b)/(Sigma^2);
+                K = 1 - exp(-r*T);
+                q2 = 0.5 * ( -(N-1) + sqrt( (N-1)^2 + (4*M)/K ) );
+
+                d1_star = (log(S_Star/X) + (b+0.5*Sigma^2)*T) / (Sigma * sqrt(T));
+                d2_star = d1_star - Sigma * sqrt(T);
+                N_d1_Star = normcdf(d1_star,0,1);
+                %N_d2_Star = normcdf(d2_star,0,1);
+                n_d1_Star = normpdf(d1_star,0,1);
+                n_d2_Star = normpdf(d2_star,0,1);
+
+                d1 = (log(S/X) + (b+0.5*Sigma^2)*T) / (Sigma * sqrt(T));
+                d2 = d1 - Sigma * sqrt(T);
+                %N_d1 = normcdf(d1,0,1);
+                %N_d2 = normcdf(d2,0,1);
+                n_d2 = normpdf(d2,0,1);
+
+                A2 = (S_Star/q2) * ( 1 - exp((b-r)*T) * N_d1_Star );
+
+                % Calculate f and g
+                c_S_Star = EurpeanOptionOnCommodity(1, S_Star, X, r, b, T, Sigma);
+                c = EurpeanOptionOnCommodity(1, S, X, r, b, T, Sigma);
+
+                f = c_S_Star + S_Star/q2 * ( 1 - exp((b-r)*T) * N_d1_Star ) - (S_Star - X);
+                g = c + A2 * ((S/S_Star)^q2) - marketPrice;
+
+                % Substitution variables
+                y1 = 1 - exp((b-r)*T) * N_d1_Star;
+                y2 = n_d1_Star / (S_Star * Sigma * sqrt(T));
+                y3 = exp((b-r)*T);
+                y4 = b/(Sigma^4) - ( ( (N-1)*b + 2*r/K ) / ( Sigma^4 * sqrt((N-1)^2 + 4*M/K) ) );
+                y5 = X * sqrt(T) * exp(-r*T) * n_d2 / (2*Sigma);
+                y6 = -0.5 * ( log(S_Star/X) + b*T ) / ( (Sigma^3 * sqrt(T)) / (4*Sigma) );
+                y7 = X * sqrt(T) * exp(-r*T) * n_d2_Star / (2*Sigma);
+
+                % Partial derivatives of 2x2Jacobi matrix
+                dg_dS_Star = ((S/S_Star)^q2) * ( (1/q2)*y1 - (S_Star/q2)*y2*y3 - q2*A2*(1/S_Star) );
+                df_dS_Star = y3 * N_d1_Star + (y1/q2) - (S_Star/q2)*(y2*y3) - 1;
+                dg_dSigmaSqr = y5 + ((S/S_Star)^q2) * ( A2*log(S/S_Star)*y4 - (S_Star/q2)*y3*y6*n_d1_Star - y1*y4*(S_Star/(q2^2)) );
+                df_dSigmaSqr = y7 - y1*y4*(S_Star/(q2^2)) - (S_Star/q2)*y3*y6*n_d1_Star;
+
+                % Determinant of jacobi matrix
+                DET = (dg_dS_Star*df_dSigmaSqr) - (dg_dSigmaSqr*df_dS_Star);
+
+                % Inverted jacobi matrix
+                J_inv = 1/DET * [df_dSigmaSqr -dg_dSigmaSqr; -df_dS_Star dg_dS_Star];
+
+                % Next iteration step
+                result = [S_Star;SigmaSqr] - J_inv * [g;f];
+                S_Star = result(1);
+                SigmaSqr = result(2);
+                Sigma = sqrt(SigmaSqr);
+                
+                %S_Star = S_Star - 1/DET * (-dg_dSigmaSqr*f + df_dSigmaSqr*g);
+                %SigmaSqr = SigmaSqr - 1/DET * (dg_dS_Star*f - df_dS_Star*g);
+                
+
+                % Update tolerance level
+                tolerance_f = abs(f);
+                tolerance_g = abs(g);
+
+            end
+
+        else
+
+            % Set initial starting values
+            S_Star_0 = S*.8;
+            %sigma_0 = 0.1;
+
+            % Makes implementation a lot slower, but seems to produce values
+            % for all kinds of options, even deep-in-the-money
+            Black_Vol = blkimpv(S, X, r, T, marketPrice, [], [], false);
+
+            S_Star = S_Star_0;
+            Sigma = Black_Vol;
+            SigmaSqr = Sigma^2;
+
+
+            tolerance_f = 1;
+            tolerance_g = 1;
+            iterationCount = 0;
+
+            while (tolerance_f > 0.00001 && tolerance_g > 0.01 && iterationCount < 1000)
+
+                M = (2*r)/(Sigma^2);
+                N = (2*b)/(Sigma^2);
+                K = 1 - exp(-r*T);
+                q1 = ( -(N-1) - sqrt( (N-1)^2 + (4*M)/K ) ) / 2;
+
+                d1_star = (log(S_Star/X) + (b+0.5*Sigma^2)*T) / (Sigma * sqrt(T));
+                d2_star = d1_star - Sigma * sqrt(T);
+                N_d1_Star = normcdf(-d1_star,0,1);
+                %N_d2_Star = normcdf(-d2_star,0,1);
+                n_d1_Star = normpdf(-d1_star,0,1);
+                n_d2_Star = normpdf(-d2_star,0,1);
+
+                d1      = (log(S/X) + (b+0.5*Sigma^2)*T) / (Sigma * sqrt(T));
+                d2      = d1 - Sigma * sqrt(T);
+                %N_d1 = normcdf(-d1,0,1);
+                %N_d2 = normcdf(-d2,0,1);
+                n_d2 = normpdf(-d2,0,1);
+
+                A1 = -(S_Star/q1) * ( 1 - exp((b-r)*T) * N_d1_Star ); 
+
+                % Calculate f and g
+                p_S_Star = EurpeanOptionOnCommodity(0, S_Star, X, r, b, T, Sigma);
+                p = EurpeanOptionOnCommodity(0, S, X, r, b, T, Sigma);
+
+                f = p_S_Star - S_Star/q1 * ( 1 - exp((b-r)*T) * N_d1_Star ) - (X - S_Star);
+                g = p + A1*((S/S_Star)^q1) - marketPrice;
+
+                % Substitution variables
+                z1 = 1 - exp((b-r)*T) * N_d1_Star;
+                z2 = -n_d1_Star * exp((b-r)*T) / (S_Star * Sigma * sqrt(T));
+                z3 = ( 0.5*(log(S_Star/X) + b*T)/(Sigma^3*sqrt(T)) ) - (sqrt(T)/(4*Sigma));
+                z4 = ( b + ( ((N-1)*b + 2*r/K) / sqrt((N-1)^2 + 4*M/K) ) ) / (Sigma^4);
+                z5 = (S_Star/q1) * ( exp((b-r)*T) * n_d1_Star * z3 ) + (S_Star/(q1^2))*z1*z4;
+
+                % Partial derivatives of 2x2Jacobi matrix
+                dg_dS_Star = ((S/S_Star)^q1) * ( (S_Star/q1)*z2 - (1/q1)*z1 - q1*A1*(1/S_Star) );
+                df_dS_Star = z1 * (1 - 1/q1) + (S_Star/q1)*z2;
+                dg_dSigmaSqr = ( n_d2*X*sqrt(T)*exp(-r*T) / (2*Sigma) ) +  ((S/S_Star)^q1) * ( A1*log(S/S_Star)*z4+z5 );
+                df_dSigmaSqr = ( n_d2_Star*X*sqrt(T)*exp(-r*T) / (2*Sigma) ) + (S_Star/q1)*exp((b-r)*T)*n_d1_Star*z3 + (S_Star/(q1^2))*z1*z4;
+
+                % Determinant of jacobi matrix
+                J = [dg_dS_Star dg_dSigmaSqr; df_dS_Star df_dSigmaSqr];
+                DET = det(J);
+
+                % Inverted jacobi matrix
+                J_inv = 1/DET * [df_dSigmaSqr -dg_dSigmaSqr; -df_dS_Star dg_dS_Star];
+
+                % Next iteration step
+                result = [S_Star;SigmaSqr] - J_inv * [g;f];
+
+                S_Star = S_Star - 1/DET * (-dg_dSigmaSqr*f + df_dSigmaSqr*g);
+                SigmaSqr = SigmaSqr - 1/DET * (dg_dS_Star*f - df_dS_Star*g);
+                Sigma = sqrt(SigmaSqr);
+
+                % Update tolerance level
+                tolerance_f = abs(f)/X;
+                tolerance_g = abs(g);
+
+            end
+        end
+    catch
+        Sigma = NaN;
+        S_Star = NaN;
+    end
+
+    % end timer
+    %toc;
+
+    %X = [Sigma;S_Star];
+
+    % Return implied volatiliry
+    X = Sigma;
+
+end

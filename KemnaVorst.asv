@@ -1,0 +1,63 @@
+function KemnaVorst( )
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%TERM PAPER FOR OPTIONS MARKET CLASS
+%REPLICATING PAPER BY KEMNA & VORST ON AVERAGE VALUE OPTION
+%CODE SUBMITTED BY: MAITREYI MANDAL
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%   PARAMETERS AS IN THE ORGINIAL PAPER
+S0 = 40;%Stock Price
+T0 = 0; %Initial Time
+K = [35, 40, 45];%Exercise Rate
+r = [0.03, 0.05, 0.07];%Risk-free interest rates
+vol = [0.2, 0.3, 0.4];%Volatilities as used in the paper
+T = 0.33;%Final date
+n = 88;%How many days in the Path 
+N = 10000;%No of simulation used in the study
+OptionP = nan(27,8);
+count = 1;
+for i=1:3
+for j=1:3
+for k=1:3
+[Ca, Cb, Stdb, Cc, Stdc] = AverageOptionValue( S0, K(k), r(i), vol(j), T0, T, n, N );
+OptionP(count,:) = [r(i),vol(j),K(k),Ca,Cb,Stdb,Cc,Stdc];
+count = count + 1;
+end
+end
+end
+end
+
+function [ St ] = StockPrices( S0, r, vol, T0, T, n, Z )
+%GENERATION OF STOCK PRICES, PAPER USES A LOG PROCESS BUT HERE A MORE
+%GENERAL APPROACH WAS TAKEN
+St = nan(n+1,1);
+St(1) = S0;
+for i = 2:n+1
+St(i,1) = St(i-1,1)*exp((r-0.5*vol^2)*(T-T0)/n+vol*sqrt((T-T0)/n)*Z(i-1));
+end;
+end
+function [ Ca, Cb, Stdb, Cc, Stdc ] = AverageOptionValue( S0, K, r, vol, T0, T, n, N )
+%ASIAN/AVERAGE OPTION VALUATION USING ARITHMATIC & GEOMETRIC MEAN
+Arith = nan(N,1);%Pre-allocating memory space by defining a matrix of zeros
+Geometric = zeros(N,1);%Pre-allocating memory space by defining a matrix of zeros
+Z = randn(n,N);% Generating random number to be used in the monte carlo simulation
+for i = 1:N
+    St = StockPrices( S0, r, vol, T0, T, n, Z(:,i) );
+    Arith(i) = exp(-r*(T-T0))*max(mean(St)-K,0);
+    Geometric(i) = AverageOptionsecondMethod(S0, St, K, r, vol, T0, T, Arith(i));
+end;
+Ca = blsprice(S0, K, r, T, vol);%Ca gives ordinary European Call Prices using Black-Scholes
+Cb = mean(Arith);%Cb gives Asian/Average Prices using Arithmetic Average
+Stdb = std(Arith)/sqrt(N);%Stdb gives Standard Errors/Deviation in Cb
+Cc = mean(Geometric);%Option Price using Geometric mean
+Stdc  = std(Geometric)/sqrt(N);%Stdc gives Standard Errors/Deviation in Cc
+end
+function [ ReducedVarValue] = AverageOptionsecondMethod( S0, St, K, r, vol, T0, T, Y )
+%HERE I AM USING VARIANCE REDUCTION TECHNIQUE
+d1 = (log(S0/K)+0.5*(r+(vol^2)/6)*(T-T0))/(vol*sqrt((T-T0)/3));
+d2 = d1-vol*sqrt((T-T0)/3);
+dfinal = (((r-(vol^2)/6)*(T-T0))/2);
+ExpW = exp(dfinal)*S0*normcdf(d1,0,1)-K*normcdf(d2,0,1);
+W1= exp(-r*(T-T0));
+geoW = W1*max(geomean(St)-K,0);
+ReducedVarValue = exp(-r*(T-T0))*ExpW + (Y-geoW);
+end
